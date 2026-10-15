@@ -1,0 +1,106 @@
+name: Windows Win32 ZIP Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the successful Windows build as a GitHub release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: shandalar Win32 ZIP
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025-vs2026
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check required credentials
+        env:
+          SHANDALAR_SOURCE_PAT: ${{ secrets.SHANDALAR_SOURCE_PAT }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          foreach ($name in @('SHANDALAR_SOURCE_PAT', 'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY')) {
+            if (![Environment]::GetEnvironmentVariable($name)) {
+              throw "Set the $name repository secret."
+            }
+          }
+
+      - name: Check out Shandalar main source
+        uses: actions/checkout@v7
+        with:
+          repository: rlerrr/shandalar-sdl3
+          token: ${{ secrets.SHANDALAR_SOURCE_PAT }}
+          persist-credentials: false
+          fetch-depth: 0
+          ref: main
+          path: source
+
+      - name: Record source commit
+        id: source
+        run: |
+          $sha = git -C source rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Build with LLVM and the VS2026 x86 STL
+        shell: cmd
+        run: call build-win32.bat source
+
+      - name: Install rclone
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'rclone.zip'
+          $tools = Join-Path $env:RUNNER_TEMP 'rclone'
+          Invoke-WebRequest https://downloads.rclone.org/rclone-current-windows-amd64.zip -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $tools
+          $exe = Get-ChildItem -LiteralPath $tools -Recurse -Filter rclone.exe | Select-Object -First 1
+          if (!$exe) { throw 'rclone.exe was not found in the download' }
+          $exe.DirectoryName >> $env:GITHUB_PATH
+
+      - name: Download all game assets from R2
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_REGION: auto
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          rclone copy R2:shandalar-dotp out/assets --checkers=8 --transfers=8 --s3-no-check-bucket
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package executable and assets
+        run: ./package-win32.ps1 -SourceDir source -AssetDir out/assets
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          path: out/shandalar-win32.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          $tag = "win32-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $notes = "Built from rlerrr/shandalar-sdl3 main commit $env:SOURCE_SHA. Includes game data from the shandalar-dotp R2 bucket."
+          $notes | Set-Content out/release-notes.txt -Encoding utf8
+          gh release create $tag out/shandalar-win32.zip --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "Shandalar Win32 build $env:GITHUB_RUN_NUMBER" --notes-file out/release-notes.txt --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
