@@ -26,14 +26,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check required credentials
+      - name: Check required R2 credentials
         env:
-          SHANDALAR_SOURCE_PAT: ${{ secrets.SHANDALAR_SOURCE_PAT }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
-          foreach ($name in @('SHANDALAR_SOURCE_PAT', 'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY')) {
+          foreach ($name in @('R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY')) {
             if (![Environment]::GetEnvironmentVariable($name)) {
               throw "Set the $name repository secret."
             }
@@ -43,7 +42,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: rlerrr/shandalar-sdl3
-          token: ${{ secrets.SHANDALAR_SOURCE_PAT }}
           persist-credentials: false
           fetch-depth: 0
           ref: main
